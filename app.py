@@ -3,9 +3,6 @@ import os
 import tempfile
 from pathlib import Path
 
-os.environ.setdefault("MPLCONFIGDIR", "/private/tmp/pnc_streamlit_matplotlib")
-os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
-
 import streamlit as st
 
 from pnc_analysis import analyze_pnc

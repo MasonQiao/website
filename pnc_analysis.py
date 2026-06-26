@@ -1,8 +1,5 @@
 import os
 
-os.environ.setdefault("MPLCONFIGDIR", "/private/tmp/pnc_streamlit_matplotlib")
-os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
-
 import matplotlib
 
 matplotlib.use("Agg")
