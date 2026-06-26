@@ -1,0 +1,9 @@
+streamlit
+nd2
+numpy
+scipy
+matplotlib
+stardist
+csbdeep
+tensorflow
+keras
