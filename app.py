@@ -48,14 +48,15 @@ else:
             f"{result['percent_cells_with_pnc']:.1f}%",
         )
 
-        st.pyplot(result["fig"], clear_figure=False)
         file_stem = Path(uploaded_file.name).stem
-        st.download_button(
+        st.columns([4, 1, 4])[1].download_button(
             "Download plot",
             data=figure_to_png(result["fig"]),
             file_name=f"{file_stem}_pnc_analysis.png",
             mime="image/png",
         )
+
+        st.pyplot(result["fig"], clear_figure=False)
 
         subplot_figs = result.get("subplot_figs", {})
         if subplot_figs:
