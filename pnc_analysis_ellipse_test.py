@@ -1,6 +1,4 @@
-import matplotlib
-
-matplotlib.use("Agg")
+import argparse
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
@@ -9,13 +7,6 @@ import numpy as np
 from csbdeep.utils import normalize
 from scipy import ndimage as ndi
 from skimage.measure import EllipseModel
-
-
-def make_single_plot(image, cmap=None):
-    fig, ax = plt.subplots(figsize=(5, 5), constrained_layout=True)
-    ax.imshow(image, cmap=cmap)
-    ax.axis("off")
-    return fig
 
 
 def _cell_ids_from_labels(labels):
@@ -48,7 +39,8 @@ def _label_border(labels, label_ids, iterations):
 def _perimeter_fit_points(mask, border_band):
     perimeter = mask & ~ndi.binary_erosion(mask, border_value=0)
 
-    # Ignore the image-edge perimeter because it can be an artificial cut line.
+    # Ignore the image-edge perimeter because that edge can be the artificial
+    # cut line, not the real cell boundary.
     fit_perimeter = perimeter & ~border_band
     y_coords, x_coords = np.nonzero(fit_perimeter)
     if x_coords.size < 12:
@@ -113,7 +105,11 @@ def _fit_ellipse(mask, border_band, max_fit_rmse):
     if rmse > max_fit_rmse:
         return None
 
-    return ellipse
+    return {
+        **ellipse,
+        "rmse": rmse,
+        "fit_points": int(points.shape[0]),
+    }
 
 
 def _ellipse_missing_fraction(mask, ellipse):
@@ -135,46 +131,92 @@ def get_non_intact_ellipse_ids(
 ):
     border_band = _border_band(labels.shape, border_margin)
     non_intact_ids = set()
+    checked_count = 0
+    fit_failed_count = 0
 
     for cell_id in _cell_ids_from_labels(labels):
         mask = labels == cell_id
         if not np.any(mask & border_band):
             continue
 
+        checked_count += 1
         ellipse = _fit_ellipse(
             mask,
             border_band,
             max_fit_rmse=max_fit_rmse,
         )
         if ellipse is None:
+            fit_failed_count += 1
             if exclude_uncertain_border_cells:
                 non_intact_ids.add(cell_id)
             continue
 
         missing_fraction = _ellipse_missing_fraction(mask, ellipse)
-        if missing_fraction > max_missing_ellipse_fraction:
+        excluded = missing_fraction > max_missing_ellipse_fraction
+        if excluded:
             non_intact_ids.add(cell_id)
 
-    return non_intact_ids
+    return non_intact_ids, checked_count, fit_failed_count
 
 
-def analyze_pnc(
-    file_path,
-    model,
-    threshold=7500,
-    scale=0.1,
-    cell_channel=0,
-    pnc_channel=1,
-    border_iterations=2,
-):
-    data = nd2.imread(file_path)
-    cell_img = data[0, cell_channel, :, :]
-    pnc_img = data[0, pnc_channel, :, :]
+def _parse_args():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Test PNC prevalence counting with ellipse-based exclusion of "
+            "non-intact border nuclei."
+        )
+    )
+    parser.add_argument("file_path", help="Path to the ND2 file to analyze.")
+    parser.add_argument("--threshold", type=float, default=7500)
+    parser.add_argument("--scale", type=float, default=0.1)
+    parser.add_argument("--cell-channel", type=int, default=0)
+    parser.add_argument("--pnc-channel", type=int, default=1)
+    parser.add_argument("--border-iterations", type=int, default=2)
+    parser.add_argument("--ellipse-border-margin", type=int, default=2)
+    parser.add_argument(
+        "--max-missing-ellipse-fraction",
+        "--max-outside-ellipse-fraction",
+        dest="max_missing_ellipse_fraction",
+        type=float,
+        default=0.15,
+        help=(
+            "Flag a border cell if this fraction of its fitted ellipse area "
+            "appears missing from the visible segmented mask."
+        ),
+    )
+    parser.add_argument("--max-ellipse-fit-rmse", type=float, default=0.35)
+    parser.add_argument(
+        "--keep-non-intact",
+        action="store_true",
+        help="Run the ellipse checks but do not remove flagged nuclei from counts.",
+    )
+    parser.add_argument(
+        "--exclude-uncertain-border-cells",
+        action="store_true",
+        help="Exclude border cells when ellipse fitting fails.",
+    )
+    return parser.parse_args()
 
-    labels, _ = model.predict_instances(normalize(cell_img), scale=scale)
-    pnc_mask = pnc_img > threshold
+
+def main():
+    args = _parse_args()
+
+    from stardist.models import StarDist2D
+
+    print("Loading StarDist model...")
+    model = StarDist2D.from_pretrained("2D_versatile_fluo")
+
+    print(f"Reading {args.file_path}...")
+    data = nd2.imread(args.file_path)
+    cell_img = data[0, args.cell_channel, :, :]
+    pnc_img = data[0, args.pnc_channel, :, :]
+
+    print("Segmenting nuclei/cells...")
+    labels, _ = model.predict_instances(normalize(cell_img), scale=args.scale)
+    pnc_mask = pnc_img > args.threshold
     pnc_labels, num_pncs = ndi.label(pnc_mask)
 
+    print("Mapping PNCs to segmented nuclei/cells...")
     cells_with_pnc_ids = set()
     for pnc_id in range(1, num_pncs + 1):
         cell_ids = labels[pnc_labels == pnc_id]
@@ -183,8 +225,28 @@ def analyze_pnc(
             cells_with_pnc_ids.add(int(np.bincount(cell_ids).argmax()))
 
     all_cell_ids = _cell_ids_from_labels(labels)
-    non_intact_cell_ids = get_non_intact_ellipse_ids(labels)
-    valid_cell_ids = all_cell_ids - non_intact_cell_ids
+    raw_total_cells = len(all_cell_ids)
+    raw_cells_with_pnc = len(cells_with_pnc_ids & all_cell_ids)
+
+    print("Checking border nuclei with ellipse fitting...")
+    (
+        non_intact_cell_ids,
+        ellipse_checked_count,
+        fit_failed_count,
+    ) = get_non_intact_ellipse_ids(
+        labels,
+        border_margin=args.ellipse_border_margin,
+        max_missing_ellipse_fraction=args.max_missing_ellipse_fraction,
+        max_fit_rmse=args.max_ellipse_fit_rmse,
+        exclude_uncertain_border_cells=args.exclude_uncertain_border_cells,
+    )
+
+    if args.keep_non_intact:
+        excluded_cell_ids = set()
+    else:
+        excluded_cell_ids = non_intact_cell_ids
+
+    valid_cell_ids = all_cell_ids - excluded_cell_ids
     valid_cells_with_pnc_ids = cells_with_pnc_ids & valid_cell_ids
 
     total_cells = len(valid_cell_ids)
@@ -192,6 +254,29 @@ def analyze_pnc(
     percent_cells_with_pnc = (
         cells_with_pnc / total_cells * 100 if total_cells else 0
     )
+
+    print()
+    print("PNC analysis summary")
+    print("--------------------")
+    print(
+        f"Raw PNC-positive cells: {raw_cells_with_pnc}/{raw_total_cells} "
+        f"({raw_cells_with_pnc / raw_total_cells * 100:.1f}%)"
+        if raw_total_cells
+        else "Raw PNC-positive cells: 0/0 (0.0%)"
+    )
+    print(f"Border cells checked by ellipse fit: {ellipse_checked_count}")
+    print(f"Ellipse fits failed: {fit_failed_count}")
+    print(f"Ellipse-flagged non-intact cells: {len(non_intact_cell_ids)}")
+    print(f"Excluded from final count: {len(excluded_cell_ids)}")
+    print(
+        f"Final PNC-positive cells: {cells_with_pnc}/{total_cells} "
+        f"({percent_cells_with_pnc:.1f}%)"
+    )
+    if non_intact_cell_ids:
+        print(
+            "Flagged cell IDs: "
+            + ", ".join(str(cell_id) for cell_id in sorted(non_intact_cell_ids))
+        )
 
     raw_cells = normalize(cell_img)
     raw_pncs = normalize(pnc_img)
@@ -208,17 +293,17 @@ def analyze_pnc(
     with_pnc_border = _label_border(
         labels,
         valid_cells_with_pnc_ids,
-        iterations=border_iterations,
+        iterations=args.border_iterations,
     )
     without_pnc_border = _label_border(
         labels,
         valid_without_pnc_ids,
-        iterations=border_iterations,
+        iterations=args.border_iterations,
     )
     excluded_border = _label_border(
         labels,
-        non_intact_cell_ids,
-        iterations=border_iterations,
+        excluded_cell_ids,
+        iterations=args.border_iterations,
     )
 
     combined_annotated = combined_raw.copy()
@@ -258,22 +343,8 @@ def analyze_pnc(
     for ax in axes.flat:
         ax.axis("off")
 
-    subplot_figs = {
-        "raw_cells": make_single_plot(cell_img, cmap="gray"),
-        "raw_pncs": make_single_plot(pnc_img, cmap="gray"),
-        "segmented_cells": make_single_plot(
-            labels,
-            cmap="nipy_spectral",
-        ),
-        "pnc_mask": make_single_plot(pnc_mask, cmap="gray"),
-        "combined_annotated": make_single_plot(combined_annotated),
-    }
+    plt.show()
 
-    return {
-        "fig": fig,
-        "subplot_figs": subplot_figs,
-        "cells_with_pnc": cells_with_pnc,
-        "total_cells": total_cells,
-        "percent_cells_with_pnc": percent_cells_with_pnc,
-        "excluded_non_intact_cells": len(non_intact_cell_ids),
-    }
+
+if __name__ == "__main__":
+    main()

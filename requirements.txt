@@ -3,6 +3,7 @@ nd2
 numpy
 scipy
 matplotlib
+scikit-image
 stardist
 csbdeep
 tensorflow
