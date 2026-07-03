@@ -335,7 +335,7 @@ def main():
     ]
     axes[1, 2].legend(
         handles=legend_handles,
-        loc="center",
+        loc="upper center",
         frameon=False,
         title="Annotated Image Legend",
     )
