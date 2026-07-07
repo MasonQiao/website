@@ -11,6 +11,21 @@ from scipy import ndimage as ndi
 from skimage.measure import EllipseModel
 
 
+# Analysis parameters
+DEFAULT_SCALE = 0.1
+DEFAULT_CELL_CHANNEL = 0
+DEFAULT_PNC_CHANNEL = 1
+CELL_BORDER_ITERATIONS = 2
+
+PNC_THRESHOLD_MULTIPLIER = 2.0
+PNC_MIN_CELL_AREA_FRACTION = 1 / 500
+
+BORDER_CELL_MARGIN = 2
+MAX_MISSING_ELLIPSE_FRACTION = 0.15
+MAX_ELLIPSE_FIT_RMSE = 0.35
+EXCLUDE_UNCERTAIN_BORDER_CELLS = True
+
+
 def make_single_plot(image, cmap=None):
     fig, ax = plt.subplots(figsize=(5, 5), constrained_layout=True)
     ax.imshow(image, cmap=cmap)
@@ -128,10 +143,10 @@ def _ellipse_missing_fraction(mask, ellipse):
 
 def get_non_intact_ellipse_ids(
     labels,
-    border_margin=2,
-    max_missing_ellipse_fraction=0.15,
-    max_fit_rmse=0.35,
-    exclude_uncertain_border_cells=True,
+    border_margin=BORDER_CELL_MARGIN,
+    max_missing_ellipse_fraction=MAX_MISSING_ELLIPSE_FRACTION,
+    max_fit_rmse=MAX_ELLIPSE_FIT_RMSE,
+    exclude_uncertain_border_cells=EXCLUDE_UNCERTAIN_BORDER_CELLS,
 ):
     border_band = _border_band(labels.shape, border_margin)
     non_intact_ids = set()
@@ -158,29 +173,63 @@ def get_non_intact_ellipse_ids(
     return non_intact_ids
 
 
+def _renumber_large_components(component_labels, min_area_pixels, first_label):
+    component_sizes = np.bincount(component_labels.ravel())
+    keep_ids = np.flatnonzero(component_sizes >= min_area_pixels)
+    keep_ids = keep_ids[keep_ids != 0]
+
+    remap = np.zeros(component_sizes.size, dtype=np.int32)
+    remap[keep_ids] = first_label + np.arange(keep_ids.size)
+    return remap[component_labels], first_label + keep_ids.size
+
+
+def _segment_pncs_by_cell(pnc_img, labels):
+    pnc_labels = np.zeros(pnc_img.shape, dtype=np.int32)
+    next_pnc_id = 1
+
+    for cell_id, cell_slice in enumerate(ndi.find_objects(labels), start=1):
+        if cell_slice is None:
+            continue
+
+        cell_labels = labels[cell_slice]
+        cell_mask = cell_labels == cell_id
+        cell_pnc_img = pnc_img[cell_slice]
+        cell_median = np.median(cell_pnc_img[cell_mask])
+        min_area_pixels = max(
+            1,
+            int(np.ceil(np.count_nonzero(cell_mask) * PNC_MIN_CELL_AREA_FRACTION)),
+        )
+        threshold = cell_median * PNC_THRESHOLD_MULTIPLIER
+        candidates = cell_mask & (cell_pnc_img > threshold)
+        component_labels, _ = ndi.label(candidates)
+
+        kept_components, next_pnc_id = _renumber_large_components(
+            component_labels,
+            min_area_pixels,
+            next_pnc_id,
+        )
+        pnc_roi = pnc_labels[cell_slice]
+        pnc_roi[cell_mask] = kept_components[cell_mask]
+
+    return pnc_labels
+
+
 def analyze_pnc(
     file_path,
     model,
-    threshold=7500,
-    scale=0.1,
-    cell_channel=0,
-    pnc_channel=1,
-    border_iterations=2,
+    scale=DEFAULT_SCALE,
+    cell_channel=DEFAULT_CELL_CHANNEL,
+    pnc_channel=DEFAULT_PNC_CHANNEL,
+    border_iterations=CELL_BORDER_ITERATIONS,
 ):
     data = nd2.imread(file_path)
     cell_img = data[0, cell_channel, :, :]
     pnc_img = data[0, pnc_channel, :, :]
 
     labels, _ = model.predict_instances(normalize(cell_img), scale=scale)
-    pnc_mask = pnc_img > threshold
-    pnc_labels, num_pncs = ndi.label(pnc_mask)
-
-    cells_with_pnc_ids = set()
-    for pnc_id in range(1, num_pncs + 1):
-        cell_ids = labels[pnc_labels == pnc_id]
-        cell_ids = cell_ids[cell_ids > 0]
-        if cell_ids.size:
-            cells_with_pnc_ids.add(int(np.bincount(cell_ids).argmax()))
+    pnc_labels = _segment_pncs_by_cell(pnc_img, labels)
+    pnc_mask = pnc_labels > 0
+    cells_with_pnc_ids = _cell_ids_from_labels(labels[pnc_mask])
 
     all_cell_ids = _cell_ids_from_labels(labels)
     non_intact_cell_ids = get_non_intact_ellipse_ids(labels)
@@ -234,8 +283,11 @@ def analyze_pnc(
 
     axes[0, 1].imshow(pnc_img, cmap="gray")
     axes[0, 1].set_title("Raw PNCs")
-    axes[1, 1].imshow(pnc_mask, cmap="gray")
-    axes[1, 1].set_title("Segmented PNCs")
+    axes[1, 1].imshow(pnc_labels, cmap="nipy_spectral")
+    axes[1, 1].set_title(
+        f"Segmented PNCs (>{PNC_THRESHOLD_MULTIPLIER:g}x, "
+        f">= {PNC_MIN_CELL_AREA_FRACTION:g} cell area)"
+    )
 
     axes[0, 2].imshow(combined_annotated)
     axes[0, 2].set_title(
@@ -265,7 +317,7 @@ def analyze_pnc(
             labels,
             cmap="nipy_spectral",
         ),
-        "pnc_mask": make_single_plot(pnc_mask, cmap="gray"),
+        "pnc_mask": make_single_plot(pnc_labels, cmap="nipy_spectral"),
         "combined_annotated": make_single_plot(combined_annotated),
     }
 
