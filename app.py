@@ -5,7 +5,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from pnc_analysis import analyze_pnc
+from pnc_analysis import PNC_THRESHOLD_MULTIPLIER, analyze_pnc
 
 
 st.set_page_config(page_title="PNC Cell Analysis", layout="wide")
@@ -29,6 +29,12 @@ st.title("PNC Cell Analysis")
 with st.spinner("Loading StarDist model..."):
     model = load_model()
 
+pnc_threshold_multiplier = st.number_input(
+    "PNC_THRESHOLD_MULTIPLIER",
+    min_value=0.0,
+    value=float(PNC_THRESHOLD_MULTIPLIER),
+)
+
 uploaded_file = st.file_uploader("Upload an ND2 file", type=["nd2"])
 if uploaded_file is None:
     st.info("Upload an ND2 file to run the analysis.")
@@ -40,7 +46,11 @@ else:
             tmp_path = tmp.name
 
         with st.spinner("Analyzing image..."):
-            result = analyze_pnc(tmp_path, model)
+            result = analyze_pnc(
+                tmp_path,
+                model,
+                pnc_threshold_multiplier=pnc_threshold_multiplier,
+            )
 
         st.metric(
             "Cells with at least one PNC",

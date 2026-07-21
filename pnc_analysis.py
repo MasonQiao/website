@@ -18,7 +18,7 @@ DEFAULT_PNC_CHANNEL = 1
 CELL_BORDER_ITERATIONS = 2
 
 PNC_THRESHOLD_MULTIPLIER = 2.0
-PNC_MIN_CELL_AREA_FRACTION = 1 / 500
+PNC_MIN_CELL_AREA_FRACTION = 1/500
 
 BORDER_CELL_MARGIN = 2
 MAX_MISSING_ELLIPSE_FRACTION = 0.15
@@ -183,7 +183,11 @@ def _renumber_large_components(component_labels, min_area_pixels, first_label):
     return remap[component_labels], first_label + keep_ids.size
 
 
-def _segment_pncs_by_cell(pnc_img, labels):
+def _segment_pncs_by_cell(
+    pnc_img,
+    labels,
+    pnc_threshold_multiplier=PNC_THRESHOLD_MULTIPLIER,
+):
     pnc_labels = np.zeros(pnc_img.shape, dtype=np.int32)
     next_pnc_id = 1
 
@@ -199,7 +203,7 @@ def _segment_pncs_by_cell(pnc_img, labels):
             1,
             int(np.ceil(np.count_nonzero(cell_mask) * PNC_MIN_CELL_AREA_FRACTION)),
         )
-        threshold = cell_median * PNC_THRESHOLD_MULTIPLIER
+        threshold = cell_median * pnc_threshold_multiplier
         candidates = cell_mask & (cell_pnc_img > threshold)
         component_labels, _ = ndi.label(candidates)
 
@@ -221,13 +225,18 @@ def analyze_pnc(
     cell_channel=DEFAULT_CELL_CHANNEL,
     pnc_channel=DEFAULT_PNC_CHANNEL,
     border_iterations=CELL_BORDER_ITERATIONS,
+    pnc_threshold_multiplier=PNC_THRESHOLD_MULTIPLIER,
 ):
     data = nd2.imread(file_path)
     cell_img = data[0, cell_channel, :, :]
     pnc_img = data[0, pnc_channel, :, :]
 
     labels, _ = model.predict_instances(normalize(cell_img), scale=scale)
-    pnc_labels = _segment_pncs_by_cell(pnc_img, labels)
+    pnc_labels = _segment_pncs_by_cell(
+        pnc_img,
+        labels,
+        pnc_threshold_multiplier=pnc_threshold_multiplier,
+    )
     pnc_mask = pnc_labels > 0
     cells_with_pnc_ids = _cell_ids_from_labels(labels[pnc_mask])
 
@@ -285,7 +294,7 @@ def analyze_pnc(
     axes[0, 1].set_title("Raw PNCs")
     axes[1, 1].imshow(pnc_labels, cmap="nipy_spectral")
     axes[1, 1].set_title(
-        f"Segmented PNCs (>{PNC_THRESHOLD_MULTIPLIER:g}x, "
+        f"Segmented PNCs (>{pnc_threshold_multiplier:g}x, "
         f">= {PNC_MIN_CELL_AREA_FRACTION:g} cell area)"
     )
 
