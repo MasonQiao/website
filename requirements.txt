@@ -1,4 +1,5 @@
 streamlit
+streamlit-image-coordinates==0.4.1
 nd2
 numpy
 scipy

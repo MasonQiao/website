@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="./style.css" />
+    <title>Live z-layer slider</title>
+  </head>
+  <body>
+    <main id="viewer-root">
+      <div id="image-grid">
+        <figure>
+          <img id="layer-image" draggable="false" />
+          <figcaption id="primary-caption"></figcaption>
+        </figure>
+        <figure id="secondary-figure">
+          <img id="secondary-layer-image" draggable="false" />
+          <figcaption id="secondary-caption"></figcaption>
+        </figure>
+      </div>
+      <label id="slider-label" for="z-slider">Z-layer</label>
+      <div class="slider-row">
+        <span id="minimum" class="endpoint"></span>
+        <input id="z-slider" type="range" step="1" />
+        <span id="maximum" class="endpoint"></span>
+        <output id="current-value" for="z-slider"></output>
+      </div>
+    </main>
+    <script src="./main.js"></script>
+  </body>
+</html>

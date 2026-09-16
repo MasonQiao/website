@@ -3,13 +3,12 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
-from matplotlib.patches import Patch
 import nd2
 import numpy as np
 from csbdeep.utils import normalize
+from matplotlib.patches import Patch
 from scipy import ndimage as ndi
 from skimage.measure import EllipseModel
-
 
 # Analysis parameters
 DEFAULT_SCALE = 0.1
@@ -34,7 +33,7 @@ def make_single_plot(image, cmap=None):
 
 
 def _cell_ids_from_labels(labels):
-    return set(int(cell_id) for cell_id in np.unique(labels[labels > 0]))
+    return {int(cell_id) for cell_id in np.unique(labels[labels > 0])}
 
 
 def _border_band(shape, margin):
